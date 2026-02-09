@@ -12,4 +12,8 @@ This is a research project exploring **supervisor model distillation** — how a
 
 ## Status
 
-The project is in the early ideation phase. See `idea.md` for the research concept and related reading list. No code, build system, or dependencies have been set up yet.
+Core infrastructure is implemented. See `idea.md` for the research concept and `plan.md` for the implementation plan.
+
+## Commit Style
+
+Keep commit messages short — ideally a single line under 50 characters. No body unless strictly necessary.
