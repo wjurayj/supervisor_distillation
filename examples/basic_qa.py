@@ -2,6 +2,7 @@
 
 import os
 import sys
+from datetime import datetime
 
 from dotenv import load_dotenv
 
@@ -14,9 +15,12 @@ from distill import OpenAIHandler, run
 
 # --- Configuration ---
 SUPERVISOR_MODEL = os.environ.get("SUPERVISOR_MODEL", "meta-llama/Llama-3.3-70B-Instruct-Turbo")
-WORKER_MODEL = os.environ.get("WORKER_MODEL", "meta-llama/Llama-3.1-8B-Instruct-Turbo")
+WORKER_MODEL = os.environ.get("WORKER_MODEL", "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo")
 BASE_URL = os.environ.get("BASE_URL", "https://api.together.xyz/v1")
-LOG_DIR = os.environ.get("LOG_DIR", "logs/basic_qa")
+
+
+timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+LOG_DIR = os.environ.get("LOG_DIR", f"logs/basic_qa_{timestamp}")
 
 # --- Build a sample long document ---
 SAMPLE_DOC = """

@@ -34,6 +34,7 @@ def run(
     log_dir: str | None = None,
     output_limit: int = 2000,
     worker_ctx_k: int = 8,
+    label: str | None = None,
 ) -> RunResult:
     """Run a supervisor-worker deep research session.
 
@@ -46,8 +47,11 @@ def run(
         log_dir: Directory for JSONL logs. None disables logging.
         output_limit: Max chars of REPL output included in LM context.
         worker_ctx_k: Worker context window size in thousands of tokens (for prompt hints).
+        label: Optional label for the task (e.g. ground truth, dataset name).
     """
     logger = RunLogger(log_dir) if log_dir else None
+    if logger:
+        logger.log_task_input(query, context, label)
     t0 = time.perf_counter()
     step = 0
 
@@ -104,6 +108,8 @@ def run(
                 all_output_parts.append(f"Code:\n```python\n{code}```\nOutput:\n{truncated}")
 
                 if repl.final_answer is not None:
+                    if logger:
+                        logger.log_task_output(repl.final_answer)
                     return RunResult(
                         answer=repl.final_answer,
                         iterations=step + 1,
@@ -136,8 +142,11 @@ def run(
             if repl.final_answer is not None:
                 break
 
+        answer = repl.final_answer or final_resp.text
+        if logger:
+            logger.log_task_output(answer)
         return RunResult(
-            answer=repl.final_answer or final_resp.text,
+            answer=answer,
             iterations=step + 1,
             supervisor_usage=supervisor.total_usage if hasattr(supervisor, "total_usage") else Usage(),
             worker_usage=worker_usage,

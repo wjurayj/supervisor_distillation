@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Supervisor-Worker Run Visualization</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #f0f2f5; --card: #fff; --border: #e5e7eb; --text: #1a1b1e;
+  --dim: #6b7280; --sup: #3b82f6; --wrk: #10b981; --repl: #f59e0b;
+  --code-bg: #1e1e2e; --code-tx: #cdd6f4; --fn-hl: #cba6f7;
+  --hdr-h: 52px; --pad: 16px;
+}
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); }
+code, pre, .mono { font-family: 'SF Mono', 'Fira Code', Consolas, monospace; }
+
+/* === Loader === */
+#loader { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; gap: 24px; padding: 40px; }
+#loader h1 { font-size: 22px; font-weight: 600; }
+#loader p { color: var(--dim); font-size: 14px; max-width: 420px; text-align: center; }
+.drop-zone {
+  width: 480px; max-width: 90vw; padding: 48px 32px; border: 2px dashed var(--border);
+  border-radius: 12px; text-align: center; cursor: pointer; transition: border-color .2s, background .2s;
+}
+.drop-zone:hover, .drop-zone.drag-over { border-color: var(--sup); background: #eff6ff; }
+.drop-zone input { display: none; }
+.drop-zone .label { font-size: 15px; font-weight: 500; margin-bottom: 6px; }
+.drop-zone .hint { font-size: 13px; color: var(--dim); }
+#load-err { color: #dc2626; font-size: 13px; display: none; }
+
+/* === App Shell === */
+#app { display: none; }
+header {
+  position: fixed; top: 0; left: 0; right: 0; height: var(--hdr-h); background: var(--card);
+  border-bottom: 1px solid var(--border); display: flex; align-items: center; padding: 0 20px;
+  z-index: 100; gap: 12px; font-size: 13px;
+}
+.badge { padding: 3px 10px; border-radius: 4px; font-weight: 500; white-space: nowrap; }
+.badge-sup { background: #dbeafe; color: #1e40af; }
+.badge-wrk { background: #d1fae5; color: #065f46; }
+.hdr-sep { width: 1px; height: 24px; background: var(--border); }
+.hdr-stats { color: var(--dim); white-space: nowrap; }
+.hdr-stats span + span::before { content: ' · '; }
+.hdr-spacer { flex: 1; }
+#ctx-btn {
+  padding: 5px 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--card);
+  font-size: 13px; cursor: pointer; white-space: nowrap; transition: background .15s;
+}
+#ctx-btn:hover { background: var(--bg); }
+#ctx-btn.active { background: #dbeafe; border-color: var(--sup); color: #1e40af; }
+
+/* === Panels === */
+#viewport { position: fixed; top: var(--hdr-h); left: 0; right: 0; bottom: 0; overflow: hidden; }
+#panels { display: flex; height: 100%; transform: translateX(-50vw); transition: transform .35s cubic-bezier(.4,0,.2,1); }
+#panels.show-context { transform: translateX(0); }
+.panel { width: 50vw; min-width: 50vw; height: 100%; overflow-y: auto; padding: var(--pad) 20px; }
+.panel-head { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; }
+
+/* === Context Panel === */
+#ctx-panel { background: #fafbfc; }
+#ctx-text { font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-wrap: break-word; color: var(--text); }
+
+/* === Supervisor Trajectory === */
+.q-card {
+  background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--sup);
+  border-radius: 8px; padding: 14px 16px; margin-bottom: 14px; font-size: 14px; line-height: 1.6;
+}
+.q-card .q-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin-bottom: 6px; }
+.sys-toggle { font-size: 12px; color: var(--dim); cursor: pointer; margin-bottom: 14px; }
+.sys-toggle:hover { color: var(--sup); }
+.sys-content { display: none; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; margin-bottom: 14px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; color: var(--dim); max-height: 300px; overflow-y: auto; }
+.sys-content.open { display: block; }
+.step-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 14px; overflow: hidden; }
+.step-hdr {
+  padding: 8px 16px; background: #fafbfc; border-bottom: 1px solid var(--border);
+  font-size: 12px; color: var(--dim); display: flex; justify-content: space-between; align-items: center;
+}
+.step-num { font-weight: 600; color: var(--text); }
+.step-body { padding: 14px 16px; }
+.seg-text { font-size: 14px; line-height: 1.6; white-space: pre-wrap; word-wrap: break-word; }
+.code-block {
+  background: var(--code-bg); color: var(--code-tx); border-radius: 6px; padding: 12px 16px;
+  margin: 10px 0; font-size: 13px; line-height: 1.5; overflow-x: auto; white-space: pre-wrap;
+  word-wrap: break-word; cursor: pointer; border: 2px solid transparent; transition: border-color .15s;
+}
+.code-block:hover { border-color: rgba(59,130,246,.5); }
+.code-block.active { border-color: var(--sup); }
+.hl-fn { color: var(--fn-hl); font-weight: 600; }
+.fb-card {
+  margin: -6px 0 14px 0; padding: 10px 16px; background: #fafbfc; border: 1px solid var(--border);
+  border-top: none; border-radius: 0 0 8px 8px; font-size: 12px; color: var(--dim);
+  line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; max-height: 120px; overflow-y: auto;
+}
+
+/* === Detail Panel === */
+#det-panel { background: #fafbfc; }
+#det-empty { display: flex; align-items: center; justify-content: center; height: 60%; color: var(--dim); font-size: 14px; text-align: center; }
+#det-content { display: none; }
+.det-hdr { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.dot-repl { background: var(--repl); }
+.dot-wrk { background: var(--wrk); }
+.det-section { margin-bottom: 24px; }
+.det-code { background: var(--code-bg); color: var(--code-tx); border-radius: 6px; padding: 12px 16px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; overflow-x: auto; }
+.det-stdout { background: #fefce8; border: 1px solid #fde68a; border-radius: 6px; padding: 12px 16px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; margin-top: 8px; max-height: 400px; overflow-y: auto; }
+.det-stderr { background: #fef2f2; border: 1px solid #fecaca; }
+.det-meta { font-size: 12px; color: var(--dim); margin-top: 6px; }
+.wk-card { background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--wrk); border-radius: 6px; margin-top: 10px; overflow: hidden; }
+.wk-card summary { padding: 10px 14px; font-size: 13px; cursor: pointer; list-style: none; display: flex; justify-content: space-between; align-items: center; }
+.wk-card summary::-webkit-details-marker { display: none; }
+.wk-card summary::after { content: '▸'; color: var(--dim); transition: transform .15s; }
+.wk-card[open] summary::after { transform: rotate(90deg); }
+.wk-card-body { padding: 0 14px 12px; }
+.wk-label { font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--dim); margin: 8px 0 4px; }
+.wk-text { font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; max-height: 200px; overflow-y: auto; padding: 8px; background: #f9fafb; border-radius: 4px; }
+.wk-meta { font-size: 12px; color: var(--dim); }
+.no-data { color: var(--dim); font-size: 13px; font-style: italic; }
+.label-card {
+  background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 16px; margin-bottom: 14px; font-size: 13px; display: flex; align-items: center; gap: 8px;
+}
+.label-tag { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); }
+.label-val { font-weight: 500; }
+.label-val.unknown { color: var(--dim); font-style: italic; }
+.answer-card {
+  background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--wrk);
+  border-radius: 8px; padding: 14px 16px; margin-top: 14px; font-size: 14px; line-height: 1.6;
+}
+.answer-card .a-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin-bottom: 6px; }
+</style>
+</head>
+<body>
+
+<!-- File Loader -->
+<div id="loader">
+  <h1>Supervisor-Worker Run Visualization</h1>
+  <p>Select a logs folder containing supervisor.jsonl, worker.jsonl, repl.jsonl, and task.jsonl.</p>
+  <div class="drop-zone" id="drop-zone">
+    <div class="label">Click to select logs folder</div>
+    <div class="hint">The folder should contain the JSONL log files from a run</div>
+    <input type="file" id="dir-input" webkitdirectory>
+  </div>
+  <div id="load-err"></div>
+</div>
+
+<!-- App -->
+<div id="app">
+  <header>
+    <span class="badge badge-sup" id="sup-model"></span>
+    <span class="badge badge-wrk" id="wrk-model"></span>
+    <div class="hdr-sep"></div>
+    <span id="hdr-label" class="badge" style="background:#f3f4f6;color:var(--dim);"></span>
+    <div class="hdr-sep"></div>
+    <div class="hdr-stats" id="hdr-stats"></div>
+    <div class="hdr-spacer"></div>
+    <button id="ctx-btn" onclick="toggleContext()">Context</button>
+  </header>
+  <div id="viewport">
+    <div id="panels">
+      <section id="ctx-panel" class="panel">
+        <div class="panel-head">Document Context</div>
+        <pre id="ctx-text" class="mono">No context available.</pre>
+      </section>
+      <section id="sup-panel" class="panel">
+        <div class="panel-head">Supervisor Trajectory</div>
+        <div id="trajectory"></div>
+      </section>
+      <section id="det-panel" class="panel">
+        <div class="panel-head">Execution Details</div>
+        <div id="det-empty">Click a code block to view execution details and worker calls.</div>
+        <div id="det-content"></div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script>
+/* === Data — replaced by visualize.py, or null for static mode === */
+const DATA = /*__DATA__*/null;
+
+/* === Globals === */
+let replByStep = {}, workerByStep = {};
+let activeBlockEl = null;
+
+/* === Helpers === */
+function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function hlCode(code) {
+  let h = esc(code);
+  h = h.replace(/\b(worker_batch|worker|FINAL)\b/g, '<span class="hl-fn">$1</span>');
+  return h;
+}
+function fmtTok(n) { return n >= 1000 ? (n/1000).toFixed(1)+'k' : String(n); }
+function parseResponse(text) {
+  const segs = [], re = /```repl\s*\n([\s\S]*?)```/g;
+  let last = 0, m;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) segs.push({type:'text', content: text.slice(last, m.index)});
+    segs.push({type:'code', content: m[1]});
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) segs.push({type:'text', content: text.slice(last)});
+  return segs;
+}
+
+/* === Index data by step === */
+function indexData(data) {
+  replByStep = {}; workerByStep = {};
+  (data.repl||[]).forEach(e => (replByStep[e.step] ??= []).push(e));
+  (data.worker||[]).forEach(e => (workerByStep[e.step] ??= []).push(e));
+}
+
+/* === Render metadata header === */
+function renderMeta(data) {
+  const sup0 = data.supervisor[0];
+  const supModel = sup0?.model || '?';
+  const wrkModel = data.worker[0]?.model || 'N/A';
+  let sIn=0, sOut=0, wIn=0, wOut=0;
+  data.supervisor.forEach(e => { sIn += e.usage.input_tokens; sOut += e.usage.output_tokens; });
+  data.worker.forEach(e => { wIn += e.usage.input_tokens; wOut += e.usage.output_tokens; });
+  const steps = data.supervisor.length;
+
+  document.getElementById('sup-model').textContent = supModel.split('/').pop();
+  const wrkBadge = document.getElementById('wrk-model');
+  if (data.worker.length) {
+    wrkBadge.textContent = wrkModel.split('/').pop();
+  } else {
+    wrkBadge.textContent = 'No worker calls';
+    wrkBadge.style.opacity = '0.5';
+  }
+
+  /* Label */
+  const labelEl = document.getElementById('hdr-label');
+  const label = data.task?.input?.label;
+  labelEl.textContent = label || 'unknown';
+  if (!label) labelEl.style.fontStyle = 'italic';
+
+  const statsEl = document.getElementById('hdr-stats');
+  const parts = [`S: ${fmtTok(sIn)}/${fmtTok(sOut)}`];
+  if (data.worker.length) parts.push(`W: ${fmtTok(wIn)}/${fmtTok(wOut)}`);
+  parts.push(`${steps} step${steps!==1?'s':''}`);
+  statsEl.innerHTML = parts.map(p => `<span>${esc(p)}</span>`).join('');
+}
+
+/* === Render supervisor trajectory === */
+function renderTrajectory(data) {
+  const container = document.getElementById('trajectory');
+  const sup0 = data.supervisor[0];
+  if (!sup0) return;
+
+  const msgs0 = sup0.messages || [];
+  const sysMsg = msgs0.find(m => m.role === 'system');
+
+  /* Use task.jsonl for question if available, fall back to supervisor messages */
+  const question = data.task?.input?.query
+    || (msgs0.find(m => m.role === 'user') || {}).content
+    || '';
+  const label = data.task?.input?.label;
+
+  let html = '';
+
+  /* Label */
+  html += `<div class="label-card"><span class="label-tag">Label:</span><span class="label-val${!label ? ' unknown' : ''}">${label ? esc(label) : 'unknown'}</span></div>`;
+
+  if (sysMsg) {
+    html += `<div class="sys-toggle" onclick="this.nextElementSibling.classList.toggle('open')">&#9654; System prompt</div>`;
+    html += `<pre class="sys-content mono">${esc(sysMsg.content)}</pre>`;
+  }
+  if (question) {
+    html += `<div class="q-card"><div class="q-label">Question</div>${esc(question)}</div>`;
+  }
+
+  /* Step cards */
+  data.supervisor.forEach((entry, idx) => {
+    const segs = parseResponse(entry.response);
+    let blockIdx = 0;
+    const elapsed = entry.elapsed != null ? entry.elapsed.toFixed(1) + 's' : '';
+    const tok = `${fmtTok(entry.usage.input_tokens)} in / ${fmtTok(entry.usage.output_tokens)} out`;
+
+    html += `<div class="step-card"><div class="step-hdr"><span class="step-num">Step ${entry.step}</span><span>${tok} &middot; ${elapsed}</span></div><div class="step-body">`;
+    segs.forEach(seg => {
+      if (seg.type === 'text') {
+        const trimmed = seg.content.trim();
+        if (trimmed) html += `<div class="seg-text">${esc(trimmed)}</div>`;
+      } else {
+        html += `<div class="code-block mono" data-step="${entry.step}" data-block="${blockIdx}" title="Click to view execution details">${hlCode(seg.content)}</div>`;
+        blockIdx++;
+      }
+    });
+    html += '</div></div>';
+
+    /* Feedback: show truncated REPL output between steps */
+    const repls = replByStep[entry.step] || [];
+    if (repls.length && idx < data.supervisor.length - 1) {
+      let fb = repls.map(r => {
+        let out = r.stdout || '';
+        if (out.length > 300) out = out.slice(0, 300) + '...';
+        return out;
+      }).filter(Boolean).join('\n');
+      if (fb) html += `<div class="fb-card mono">${esc(fb)}</div>`;
+    }
+  });
+
+  /* Answer card at the bottom */
+  const answer = data.task?.output?.answer;
+  if (answer) {
+    html += `<div class="answer-card"><div class="a-label">Answer</div>${esc(answer)}</div>`;
+  }
+
+  container.innerHTML = html;
+}
+
+/* === Render detail panel for a selected code block === */
+function renderDetail(step, blockIdx) {
+  const repls = replByStep[step] || [];
+  const workers = workerByStep[step] || [];
+  const repl = repls[blockIdx];
+
+  const empty = document.getElementById('det-empty');
+  const content = document.getElementById('det-content');
+  empty.style.display = 'none';
+  content.style.display = 'block';
+
+  let html = '';
+
+  /* REPL section */
+  html += '<div class="det-section">';
+  html += '<div class="det-hdr"><span class="dot dot-repl"></span> REPL Execution</div>';
+  if (repl) {
+    html += `<div class="det-code mono">${hlCode(repl.code)}</div>`;
+    if (repl.stdout) {
+      html += `<div class="det-stdout mono">${esc(repl.stdout)}</div>`;
+    }
+    if (repl.stderr) {
+      html += `<div class="det-stdout det-stderr mono">${esc(repl.stderr)}</div>`;
+    }
+    html += `<div class="det-meta">${repl.elapsed != null ? repl.elapsed.toFixed(3) + 's' : ''}</div>`;
+  } else {
+    html += '<div class="no-data">No REPL data for this block.</div>';
+  }
+  html += '</div>';
+
+  /* Worker section */
+  html += '<div class="det-section" id="worker-section">';
+  html += `<div class="det-hdr"><span class="dot dot-wrk"></span> Worker Calls (${workers.length})</div>`;
+  if (workers.length === 0) {
+    html += '<div class="no-data">No worker calls in this step.</div>';
+  } else {
+    workers.forEach((w, i) => {
+      const tok = `${fmtTok(w.usage.input_tokens)} in / ${fmtTok(w.usage.output_tokens)} out`;
+      const el = w.elapsed != null ? w.elapsed.toFixed(2) + 's' : '';
+      html += `<details class="wk-card">`;
+      html += `<summary><span>Call ${i+1}/${workers.length}</span><span class="wk-meta">${tok} &middot; ${el}</span></summary>`;
+      html += '<div class="wk-card-body">';
+      html += '<div class="wk-label">Prompt</div>';
+      html += `<div class="wk-text mono">${esc(w.prompt)}</div>`;
+      html += '<div class="wk-label">Response</div>';
+      html += `<div class="wk-text mono">${esc(w.response)}</div>`;
+      html += '</div></details>';
+    });
+  }
+  html += '</div>';
+
+  content.innerHTML = html;
+  document.getElementById('det-panel').scrollTop = 0;
+}
+
+/* === Context === */
+function renderContext(data) {
+  if (data.task?.input?.context) {
+    document.getElementById('ctx-text').textContent = data.task.input.context;
+  }
+}
+
+/* === Panel sliding === */
+function toggleContext() {
+  const panels = document.getElementById('panels');
+  const btn = document.getElementById('ctx-btn');
+  panels.classList.toggle('show-context');
+  btn.classList.toggle('active');
+}
+
+/* === Code block click handler === */
+document.addEventListener('click', function(e) {
+  const block = e.target.closest('.code-block');
+  if (!block) return;
+  const step = parseInt(block.dataset.step);
+  const idx = parseInt(block.dataset.block);
+
+  if (activeBlockEl) activeBlockEl.classList.remove('active');
+  block.classList.add('active');
+  activeBlockEl = block;
+
+  /* Ensure we're in detail mode */
+  document.getElementById('panels').classList.remove('show-context');
+  document.getElementById('ctx-btn').classList.remove('active');
+
+  renderDetail(step, idx);
+
+  /* If click was on a worker/FINAL highlight, scroll to worker section */
+  if (e.target.closest('.hl-fn')) {
+    setTimeout(() => {
+      const ws = document.getElementById('worker-section');
+      if (ws) ws.scrollIntoView({behavior:'smooth', block:'start'});
+    }, 50);
+  }
+});
+
+/* === Directory loader (static mode) === */
+function initLoader() {
+  const zone = document.getElementById('drop-zone');
+  const dirInput = document.getElementById('dir-input');
+  const errEl = document.getElementById('load-err');
+
+  zone.addEventListener('click', () => dirInput.click());
+  dirInput.addEventListener('change', e => handleDir(e.target.files));
+
+  async function handleDir(files) {
+    /* Build a lookup by basename so we find our files regardless of path prefix */
+    const byName = {};
+    for (const f of files) {
+      const base = f.name;
+      byName[base] = f;
+    }
+
+    if (!byName['supervisor.jsonl']) {
+      errEl.textContent = 'Selected folder is missing supervisor.jsonl.';
+      errEl.style.display = 'block';
+      return;
+    }
+    errEl.style.display = 'none';
+
+    try {
+      const readJSONL = async (f) => {
+        if (!f) return [];
+        const text = await f.text();
+        return text.trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+      };
+      const readTaskJSONL = async (f) => {
+        if (!f) return null;
+        const text = await f.text();
+        const entries = text.trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+        const result = {};
+        for (const e of entries) {
+          if (e.type === 'input') result.input = e;
+          else if (e.type === 'output') result.output = e;
+        }
+        return Object.keys(result).length ? result : null;
+      };
+      const data = {
+        supervisor: await readJSONL(byName['supervisor.jsonl']),
+        worker: await readJSONL(byName['worker.jsonl']),
+        repl: await readJSONL(byName['repl.jsonl']),
+        task: await readTaskJSONL(byName['task.jsonl']),
+      };
+      boot(data);
+    } catch (err) {
+      errEl.textContent = 'Error parsing files: ' + err.message;
+      errEl.style.display = 'block';
+    }
+  }
+}
+
+/* === Boot visualization === */
+function boot(data) {
+  document.getElementById('loader').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  indexData(data);
+  renderMeta(data);
+  renderTrajectory(data);
+  renderContext(data);
+}
+
+/* === Init === */
+if (DATA) {
+  boot(DATA);
+} else {
+  initLoader();
+}
+</script>
+</body>
+</html>
