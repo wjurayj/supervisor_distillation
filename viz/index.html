@@ -49,6 +49,11 @@ header {
 }
 #ctx-btn:hover { background: var(--bg); }
 #ctx-btn.active { background: #dbeafe; border-color: var(--sup); color: #1e40af; }
+#dir-select {
+  padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px;
+  font-size: 13px; background: var(--card); max-width: 300px; cursor: pointer;
+}
+#dir-select:empty { display: none; }
 
 /* === Panels === */
 #viewport { position: fixed; top: var(--hdr-h); left: 0; right: 0; bottom: 0; overflow: hidden; }
@@ -147,6 +152,8 @@ header {
 <!-- App -->
 <div id="app">
   <header>
+    <select id="dir-select"></select>
+    <div class="hdr-sep" id="dir-sep"></div>
     <span class="badge badge-sup" id="sup-model"></span>
     <span class="badge badge-wrk" id="wrk-model"></span>
     <div class="hdr-sep"></div>
@@ -182,6 +189,7 @@ const DATA = /*__DATA__*/null;
 /* === Globals === */
 let replByStep = {}, workerByStep = {};
 let activeBlockEl = null;
+let allLogDirs = {}; /* { dirPath: { basename: File } } */
 
 /* === Helpers === */
 function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -406,54 +414,102 @@ document.addEventListener('click', function(e) {
   }
 });
 
+/* === File reading helpers === */
+async function readJSONL(f) {
+  if (!f) return [];
+  const text = await f.text();
+  return text.trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+}
+async function readTaskJSONL(f) {
+  if (!f) return null;
+  const text = await f.text();
+  const entries = text.trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+  const result = {};
+  for (const e of entries) {
+    if (e.type === 'input') result.input = e;
+    else if (e.type === 'output') result.output = e;
+  }
+  return Object.keys(result).length ? result : null;
+}
+
+async function loadLogDir(byName) {
+  return {
+    supervisor: await readJSONL(byName['supervisor.jsonl']),
+    worker: await readJSONL(byName['worker.jsonl']),
+    repl: await readJSONL(byName['repl.jsonl']),
+    task: await readTaskJSONL(byName['task.jsonl']),
+  };
+}
+
+/* === Group files by parent directory === */
+function groupFilesByDir(files) {
+  const dirs = {};
+  for (const f of files) {
+    const rel = f.webkitRelativePath;
+    const parts = rel.split('/');
+    const dirPath = parts.slice(0, -1).join('/');
+    if (!dirs[dirPath]) dirs[dirPath] = {};
+    dirs[dirPath][f.name] = f;
+  }
+  return dirs;
+}
+
+/* === Switch to a specific log directory === */
+async function switchToDir(dirPath) {
+  const byName = allLogDirs[dirPath];
+  const data = await loadLogDir(byName);
+
+  document.getElementById('dir-select').value = dirPath;
+
+  /* Reset detail panel */
+  activeBlockEl = null;
+  document.getElementById('det-empty').style.display = 'flex';
+  document.getElementById('det-content').style.display = 'none';
+  document.getElementById('panels').classList.remove('show-context');
+  document.getElementById('ctx-btn').classList.remove('active');
+
+  boot(data);
+}
+
 /* === Directory loader (static mode) === */
 function initLoader() {
   const zone = document.getElementById('drop-zone');
   const dirInput = document.getElementById('dir-input');
   const errEl = document.getElementById('load-err');
+  const sel = document.getElementById('dir-select');
 
   zone.addEventListener('click', () => dirInput.click());
   dirInput.addEventListener('change', e => handleDir(e.target.files));
+  sel.addEventListener('change', e => switchToDir(e.target.value));
 
   async function handleDir(files) {
-    /* Build a lookup by basename so we find our files regardless of path prefix */
-    const byName = {};
-    for (const f of files) {
-      const base = f.name;
-      byName[base] = f;
-    }
+    const dirs = groupFilesByDir(files);
 
-    if (!byName['supervisor.jsonl']) {
-      errEl.textContent = 'Selected folder is missing supervisor.jsonl.';
+    /* Find directories that contain supervisor.jsonl */
+    const logDirs = Object.entries(dirs)
+      .filter(([_, d]) => 'supervisor.jsonl' in d)
+      .sort(([a], [b]) => a.localeCompare(b));
+
+    if (logDirs.length === 0) {
+      errEl.textContent = 'No supervisor.jsonl found in selected folder or its subdirectories.';
       errEl.style.display = 'block';
       return;
     }
     errEl.style.display = 'none';
 
+    allLogDirs = Object.fromEntries(logDirs);
+
+    /* Populate dropdown */
+    sel.innerHTML = '';
+    logDirs.forEach(([path]) => {
+      const opt = document.createElement('option');
+      opt.value = path;
+      opt.textContent = path;
+      sel.appendChild(opt);
+    });
+
     try {
-      const readJSONL = async (f) => {
-        if (!f) return [];
-        const text = await f.text();
-        return text.trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
-      };
-      const readTaskJSONL = async (f) => {
-        if (!f) return null;
-        const text = await f.text();
-        const entries = text.trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
-        const result = {};
-        for (const e of entries) {
-          if (e.type === 'input') result.input = e;
-          else if (e.type === 'output') result.output = e;
-        }
-        return Object.keys(result).length ? result : null;
-      };
-      const data = {
-        supervisor: await readJSONL(byName['supervisor.jsonl']),
-        worker: await readJSONL(byName['worker.jsonl']),
-        repl: await readJSONL(byName['repl.jsonl']),
-        task: await readTaskJSONL(byName['task.jsonl']),
-      };
-      boot(data);
+      await switchToDir(logDirs[0][0]);
     } catch (err) {
       errEl.textContent = 'Error parsing files: ' + err.message;
       errEl.style.display = 'block';
@@ -473,6 +529,7 @@ function boot(data) {
 
 /* === Init === */
 if (DATA) {
+  document.getElementById('dir-sep').style.display = 'none';
   boot(DATA);
 } else {
   initLoader();
