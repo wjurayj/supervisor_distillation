@@ -26,14 +26,21 @@ supervisor_distillation/
 │   ├── log.py                  # Streaming JSONL logger (3 files)
 │   └── orchestrator.py         # Main loop: prompt → code → execute → repeat
 ├── examples/
-│   └── basic_qa.py             # Minimal usage example
+│   ├── basic_qa.py             # Minimal usage example
+│   └── run_experiment.py       # Benchmark runner (QASPER, etc.)
+├── experiments/
+│   └── ib_reproduce.sh         # Grid over supervisor/worker pairs
+├── utils/
+│   └── analysis.py             # Aggregate logs into a results table
+├── tasks/
+│   └── qasper/                 # QASPER task definition and scoring
 ├── idea.md                     # Research concept and reading list
 └── plan.md                     # Implementation plan
 ```
 
 ### Module Overview
 
-**`distill/models.py`** — Model handler abstraction. `ModelHandler` is an ABC with two methods: `chat(messages)` and `chat_batch(message_batches)`. `OpenAIHandler` implements this using the `openai` SDK with a configurable `base_url`, so it works with Together AI, OpenAI, or any compatible endpoint.
+**`distill/models.py`** — Model handler abstraction. `ModelHandler` is an ABC with two methods: `chat(messages)` and `chat_batch(message_batches)`. `OpenAIHandler` implements this using the `openai` SDK with a configurable `base_url`, so it works with Together AI, OpenAI, or any compatible endpoint. `VLLMHandler` provides offline inference via the vLLM engine.
 
 **`distill/repl.py`** — Sandboxed Python REPL that the supervisor's code runs in. The namespace exposes five primitives: `context` (the document), `query` (the question), `worker(prompt)` (call the worker model), `worker_batch(prompts)` (parallel worker calls), and `FINAL(answer)` (signal completion). Dangerous builtins (`eval`, `exec`, `compile`, `input`) are blocked. The namespace persists across code blocks within a run.
 
@@ -138,80 +145,63 @@ logs/my_run/
 
 REPL output in `repl.jsonl` is the full, untruncated output — the supervisor only sees the first `output_limit` characters, but the logs capture everything.
 
-## Extending the System
+## Experiments
 
-### Adding a New Model Backend
+### QASPER Benchmark
 
-Subclass `ModelHandler` and implement `chat` and `chat_batch`:
+The QASPER task evaluates question-answering over NLP papers. `examples/run_experiment.py` runs the full supervisor-worker pipeline on a set of examples and saves per-question results.
 
-```python
-from distill.models import ModelHandler, LMResponse, Usage
-
-class VLLMHandler(ModelHandler):
-    """Offline inference via vLLM."""
-
-    def __init__(self, model_path: str, **kwargs):
-        from vllm import LLM
-        self.llm = LLM(model=model_path, **kwargs)
-        self.total_usage = Usage()
-
-    def chat(self, messages, **kwargs):
-        # Convert messages to a single prompt, call self.llm.generate(),
-        # return LMResponse(text=..., usage=..., model=..., elapsed=...)
-        ...
-
-    def chat_batch(self, message_batches, **kwargs):
-        # vLLM natively supports batching — pass all prompts at once
-        ...
+```bash
+# Single run with specific models
+python examples/run_experiment.py \
+  --supervisor-model "Qwen/Qwen3-235B-A22B-Instruct-2507-tput" \
+  --worker-model "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo" \
+  --seed 42 -n 20
 ```
 
-Then use it like any other handler:
+| Flag | Default | Description |
+|---|---|---|
+| `--task` | `qasper` | Task name |
+| `--supervisor-model` | `$SUPERVISOR_MODEL` or Llama-3.3-70B | Supervisor model |
+| `--worker-model` | `$WORKER_MODEL` or Llama-3.1-8B | Worker model |
+| `--judge-model` | Qwen3-235B | LLM judge for scoring |
+| `-n` | 20 | Number of examples (`-1` for all) |
+| `--seed` | 42 | Random seed for sampling |
+| `--max-iterations` | 15 | Max supervisor turns per example |
 
-```python
-supervisor = VLLMHandler("/path/to/llama-70b")
-worker = VLLMHandler("/path/to/llama-8b")
-result = run(query=..., context=..., supervisor=supervisor, worker=worker)
+Results are saved to `logs/<task>/<timestamp>/results.csv` alongside per-example log subdirectories.
+
+### Running a Grid Experiment
+
+`experiments/ib_reproduce.sh` runs all combinations of two supervisor and two worker models:
+
+```bash
+bash experiments/ib_reproduce.sh
 ```
 
-### Customizing the Supervisor Prompt
+This produces one timestamped run directory per combination under `logs/qasper/`.
 
-Edit `SYSTEM_PROMPT` in `distill/prompts.py`, or override the message construction:
+### Analyzing Results
 
-```python
-from distill.orchestrator import run
-from distill.prompts import build_system_prompt
+`utils/analysis.py` aggregates logs from one or more runs into a summary table with accuracy, step counts, and token usage.
 
-# Option 1: Modify the template in prompts.py directly
+```bash
+# Analyze all runs under a parent directory
+python utils/analysis.py logs/qasper
 
-# Option 2: Build custom messages and pass to the orchestrator internals
-# The orchestrator uses build_system_prompt() to create the initial messages —
-# you can modify that function to inject domain-specific instructions,
-# few-shot examples, or different chunking strategies.
+# Analyze specific run directories
+python utils/analysis.py logs/qasper/20260211-163519 logs/qasper/20260211-170952
 ```
 
-The supervisor prompt uses three format variables: `{worker_ctx}` (worker context window in K), `{worker_chunk}` (max chars per worker prompt), and `{output_limit}` (REPL output truncation limit). These are filled in by `build_system_prompt()`.
+Example output:
 
-### Adding REPL Primitives
-
-To give the supervisor access to new tools (e.g., web search, retrieval), add them to the REPL namespace in `distill/repl.py`:
-
-```python
-# In REPL.__init__, add to self._namespace:
-self._namespace = {
-    ...
-    "search": search_fn,           # web search primitive
-    "retrieve": retrieval_fn,      # vector DB retrieval
-    "supervisor": escalate_fn,     # escalate to supervisor (RLM-style)
-}
+```
+Supervisor                         | Worker                           |   Accuracy | Avg Steps | Total Steps |  Sup In | Sup Out |  Wrk In | Wrk Out
+-----------------------------------+----------------------------------+------------+-----------+-------------+---------+---------+---------+--------
+Qwen3-235B-A22B-Instruct-2507-tput | Meta-Llama-3.1-8B-Instruct-Turbo | 40% (8/20) |       6.0 |         121 | 243,669 |  19,505 | 210,288 |  18,265
+Llama-3.3-70B-Instruct-Turbo       | Qwen2.5-7B-Instruct-Turbo        | 20% (4/20) |       3.5 |          71 |  58,555 |  10,732 | 130,933 | 190,699
 ```
 
-Then update the system prompt in `distill/prompts.py` to document the new primitives so the supervisor knows how to use them.
+## Contributing
 
-### Using the Logs for Distillation
-
-The JSONL logs capture complete supervisor-worker interaction traces — these are the training data for distillation experiments:
-
-- **Few-shot demonstrations**: Sample (context_chunk, worker_response) pairs from `worker.jsonl` to construct few-shot prompts
-- **SFT / imitation learning**: Use supervisor code traces from `supervisor.jsonl` as targets for fine-tuning a smaller model to mimic the supervisor's chunking and aggregation strategy
-- **On-policy distillation**: Run the system, collect logs, fine-tune the worker, then re-run with the updated worker to generate new on-policy data
-- **RL with compression objective**: Use `worker.jsonl` entries as episodes — the worker's response is the "compression" of the chunk, and downstream answer quality (from `supervisor.jsonl`) provides the reward signal
+See [CONTRIBUTING.md](CONTRIBUTING.md) for notes on adding new model backends, customizing prompts, adding REPL primitives, and using the logs for distillation.

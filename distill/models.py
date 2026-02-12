@@ -7,6 +7,7 @@ import os
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import Any
 
 from openai import AsyncOpenAI
 
@@ -31,10 +32,7 @@ class LMResponse:
 
 
 class ModelHandler(ABC):
-    """Abstract interface exposing OpenAI-compatible chat completions.
-
-    Future: implement VLLMHandler for offline vLLM inference.
-    """
+    """Abstract interface exposing OpenAI-compatible chat completions."""
 
     @abstractmethod
     def chat(self, messages: list[dict], **kwargs) -> LMResponse: ...
@@ -85,3 +83,80 @@ class OpenAIHandler(ModelHandler):
                 *(self._achat(msgs, **kwargs) for msgs in message_batches)
             )
         return asyncio.run(_gather())
+
+
+class VLLMHandler(ModelHandler):
+    """Offline inference using the vLLM engine.
+
+    Args:
+        model: Logical model name used in LMResponse and logs.
+        model_path: Path or HF repo that vLLM loads weights from.
+            Defaults to *model* when not provided.
+        **kwargs: Forwarded to ``SamplingParams`` as defaults
+            (e.g. temperature, max_tokens).  Any additional keyword
+            arguments whose names start with ``engine_`` are stripped
+            of that prefix and forwarded to the ``LLM`` constructor
+            instead (e.g. ``engine_tensor_parallel_size=2``).
+    """
+
+    def __init__(
+        self,
+        model: str,
+        model_path: str | None = None,
+        **kwargs: Any,
+    ):
+        from vllm import LLM
+
+        self.model = model
+        self.model_path = model_path or model
+
+        # Split kwargs: engine_* go to LLM(), rest go to SamplingParams.
+        engine_kwargs: dict[str, Any] = {}
+        sampling_kwargs: dict[str, Any] = {}
+        for k, v in kwargs.items():
+            if k.startswith("engine_"):
+                engine_kwargs[k.removeprefix("engine_")] = v
+            else:
+                sampling_kwargs[k] = v
+
+        self.default_kwargs = sampling_kwargs
+        self._llm = LLM(model=self.model_path, **engine_kwargs)
+        self.total_usage = Usage()
+
+    def _build_sampling_params(self, **overrides: Any):
+        from vllm import SamplingParams
+
+        merged = {**self.default_kwargs, **overrides}
+        return SamplingParams(**merged)
+
+    def chat(self, messages: list[dict], **kwargs) -> LMResponse:
+        params = self._build_sampling_params(**kwargs)
+        t0 = time.perf_counter()
+        outputs = self._llm.chat(messages=messages, sampling_params=params)
+        elapsed = time.perf_counter() - t0
+
+        req = outputs[0]
+        comp = req.outputs[0]
+        usage = Usage(
+            input_tokens=len(req.prompt_token_ids),
+            output_tokens=len(comp.token_ids),
+        )
+        self.total_usage += usage
+        return LMResponse(text=comp.text, usage=usage, model=self.model, elapsed=elapsed)
+
+    def chat_batch(self, message_batches: list[list[dict]], **kwargs) -> list[LMResponse]:
+        params = self._build_sampling_params(**kwargs)
+        t0 = time.perf_counter()
+        outputs = self._llm.chat(messages=message_batches, sampling_params=params)
+        elapsed = time.perf_counter() - t0
+
+        results: list[LMResponse] = []
+        for req in outputs:
+            comp = req.outputs[0]
+            usage = Usage(
+                input_tokens=len(req.prompt_token_ids),
+                output_tokens=len(comp.token_ids),
+            )
+            self.total_usage += usage
+            results.append(LMResponse(text=comp.text, usage=usage, model=self.model, elapsed=elapsed))
+        return results

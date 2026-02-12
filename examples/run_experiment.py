@@ -71,7 +71,7 @@ def main():
     )
     worker = OpenAIHandler(
         model=args.worker_model, base_url=args.base_url,
-        temperature=0.2, max_tokens=512,
+        temperature=0.6, max_tokens=512,
     )
 
     # --- Run ---
