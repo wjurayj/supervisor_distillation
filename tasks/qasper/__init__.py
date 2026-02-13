@@ -44,6 +44,7 @@ class QasperTask:
         split: str = "train",
         seed: int = 42,
         limit: int | None = None,
+        num_distractors: int = 0,
         judge_model: str = "Qwen/Qwen3-235B-A22B-Instruct-2507-tput",
         base_url: str = "https://api.together.xyz/v1",
         api_key: str | None = None,
@@ -51,6 +52,7 @@ class QasperTask:
         self.split = split
         self.seed = seed
         self.limit = limit
+        self.num_distractors = num_distractors
         self.judge_model = judge_model
         self._base_url = base_url
         self._api_key = api_key
@@ -64,13 +66,46 @@ class QasperTask:
             )
         return self._client
 
+    @staticmethod
+    def _format_paper(title: str, content: str) -> str:
+        return f"=== Paper: {title} ===\n\n{content}"
+
     def build_dataset(self) -> list[QasperExample]:
         raw = load_qasper_dataset(split=self.split)
-        examples = [
-            QasperExample(
+
+        # Build paper pool for distractor sampling
+        paper_pool: dict[str, dict] = {}
+        if self.num_distractors > 0:
+            for entry in raw:
+                if entry["doc_id"] not in paper_pool:
+                    paper_pool[entry["doc_id"]] = {
+                        "title": entry["title"],
+                        "context": entry["context"],
+                    }
+
+        rng = random.Random(self.seed)
+
+        examples = []
+        for entry in raw:
+            if self.num_distractors > 0:
+                gold = self._format_paper(entry["title"], entry["context"])
+                distractors = [
+                    self._format_paper(p["title"], p["context"])
+                    for did, p in paper_pool.items()
+                    if did != entry["doc_id"]
+                ]
+                k = min(self.num_distractors, len(distractors))
+                selected = rng.sample(distractors, k)
+                docs = [gold] + selected
+                rng.shuffle(docs)
+                context = "\n\n".join(docs)
+            else:
+                context = entry["context"]
+
+            examples.append(QasperExample(
                 id=entry["qa_id"],
                 query=entry["question"],
-                context=entry["context"],
+                context=context,
                 target=entry["answer"],
                 title=entry["title"],
                 metadata={
@@ -78,12 +113,9 @@ class QasperTask:
                     "evidence": entry.get("evidence"),
                     "highlighted_evidence": entry.get("highlighted_evidence"),
                 },
-            )
-            for entry in raw
-        ]
+            ))
 
-        random.seed(self.seed)
-        random.shuffle(examples)
+        rng.shuffle(examples)
 
         if self.limit is not None and self.limit > 0:
             examples = examples[:self.limit]

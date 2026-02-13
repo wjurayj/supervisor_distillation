@@ -8,8 +8,8 @@ from datetime import datetime, timezone
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from distill.models import LMResponse
-    from distill.repl import ExecResult
+    from orchestrator.models import LMResponse
+    from orchestrator.repl import ExecResult
 
 
 def _now() -> str:
@@ -32,15 +32,21 @@ class RunLogger:
         self._repl_f = open(os.path.join(log_dir, "repl.jsonl"), "a")
         self._task_f = open(os.path.join(log_dir, "task.jsonl"), "a")
 
-    def log_task_input(self, query: str, context: Any, label: str | None = None) -> None:
-        """Log the task input (query, context, optional label)."""
-        _write(self._task_f, {
+    def log_task_input(
+        self, query: str, context: Any, label: str | None = None, *, features: Any = None,
+    ) -> None:
+        """Log the task input (query, context, optional label and features)."""
+        from dataclasses import asdict
+        entry: dict[str, Any] = {
             "type": "input",
             "query": query,
             "context": context if isinstance(context, str) else str(context),
             "label": label or "",
             "timestamp": _now(),
-        })
+        }
+        if features is not None:
+            entry["features"] = asdict(features)
+        _write(self._task_f, entry)
 
     def log_task_output(self, answer: Any) -> None:
         """Log the task output (FINAL answer)."""

@@ -7,7 +7,10 @@ import sys
 import time
 import traceback
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from orchestrator.features import FeatureFlags
 
 
 class FinalSignal(Exception):
@@ -34,6 +37,30 @@ def _make_safe_builtins() -> dict:
     return safe
 
 
+_STRUCTURED_OUTPUT_SUFFIX = (
+    "\n\nRespond in this exact format:\n"
+    "explanation: <1-2 sentence reasoning>\n"
+    "citation: <direct quote from the text>\n"
+    "answer: <concise answer>"
+)
+
+
+def _wrap_structured_output(fn: Callable[[str], str]) -> Callable[[str], str]:
+    """Append JSON schema instructions to every worker prompt."""
+    def wrapped(prompt: str) -> str:
+        return fn(prompt + _STRUCTURED_OUTPUT_SUFFIX)
+    return wrapped
+
+
+def _wrap_structured_output_batch(
+    fn: Callable[[list[str]], list[str]],
+) -> Callable[[list[str]], list[str]]:
+    """Append JSON schema instructions to every prompt in a batch."""
+    def wrapped(prompts: list[str]) -> list[str]:
+        return fn([p + _STRUCTURED_OUTPUT_SUFFIX for p in prompts])
+    return wrapped
+
+
 class REPL:
     """Sandboxed Python REPL with worker model primitives.
 
@@ -52,8 +79,15 @@ class REPL:
         worker_fn: Callable[[str], str],
         worker_batch_fn: Callable[[list[str]], list[str]],
         output_limit: int = 2000,
+        features: FeatureFlags | None = None,
     ):
         self.output_limit = output_limit
+
+        # Wrap worker functions when structured_output is on
+        if features and features.structured_output:
+            worker_fn = _wrap_structured_output(worker_fn)
+            worker_batch_fn = _wrap_structured_output_batch(worker_batch_fn)
+
         self._namespace: dict[str, Any] = {
             "__builtins__": _make_safe_builtins(),
             "context": context,
@@ -62,6 +96,18 @@ class REPL:
             "worker_batch": worker_batch_fn,
             "FINAL": self._final,
         }
+
+        # Inject chunking functions when builtin_chunking is on
+        if features and features.builtin_chunking:
+            from orchestrator.chunking import (
+                chunk_by_section,
+                chunk_by_paragraph,
+                chunk_by_tokens,
+            )
+            self._namespace["chunk_by_section"] = chunk_by_section
+            self._namespace["chunk_by_paragraph"] = chunk_by_paragraph
+            self._namespace["chunk_by_tokens"] = chunk_by_tokens
+
         self._final_answer: Any = None
 
     def _final(self, answer: Any) -> None:

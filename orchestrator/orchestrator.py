@@ -5,12 +5,15 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from distill.log import RunLogger
-from distill.models import LMResponse, ModelHandler, Usage
-from distill.prompts import build_system_prompt, build_user_prompt
-from distill.repl import REPL
+from orchestrator.log import RunLogger
+from orchestrator.models import LMResponse, ModelHandler, Usage
+from orchestrator.prompts import build_system_prompt, build_user_prompt
+from orchestrator.repl import REPL
+
+if TYPE_CHECKING:
+    from orchestrator.features import FeatureFlags
 
 _CODE_BLOCK_RE = re.compile(r"```repl\s*\n(.*?)```", re.DOTALL)
 
@@ -35,6 +38,8 @@ def run(
     output_limit: int = 2000,
     worker_ctx_k: int = 8,
     label: str | None = None,
+    prompt_template: str | None = None,
+    features: FeatureFlags | None = None,
 ) -> RunResult:
     """Run a supervisor-worker deep research session.
 
@@ -48,10 +53,12 @@ def run(
         output_limit: Max chars of REPL output included in LM context.
         worker_ctx_k: Worker context window size in thousands of tokens (for prompt hints).
         label: Optional label for the task (e.g. ground truth, dataset name).
+        prompt_template: Override the supervisor system prompt template.
+        features: Optional FeatureFlags for ablation experiments.
     """
     logger = RunLogger(log_dir) if log_dir else None
     if logger:
-        logger.log_task_input(query, context, label)
+        logger.log_task_input(query, context, label, features=features)
     t0 = time.perf_counter()
     step = 0
 
@@ -77,8 +84,15 @@ def run(
                 logger.log_worker(step, prompt, resp)
         return [r.text for r in responses]
 
-    repl = REPL(context, query, _worker_fn, _worker_batch_fn, output_limit=output_limit)
-    messages = build_system_prompt(context, query, worker_ctx_k=worker_ctx_k, output_limit=output_limit)
+    repl = REPL(
+        context, query, _worker_fn, _worker_batch_fn,
+        output_limit=output_limit, features=features,
+    )
+    messages = build_system_prompt(
+        context, query,
+        worker_ctx_k=worker_ctx_k, output_limit=output_limit,
+        prompt_template=prompt_template, features=features,
+    )
 
     try:
         for step in range(max_iterations):
@@ -121,7 +135,7 @@ def run(
             # Append code + output to message history
             messages.append({"role": "assistant", "content": sup_resp.text})
             execution_summary = "\n\n".join(all_output_parts)
-            nudge = build_user_prompt(step, max_iterations)
+            nudge = build_user_prompt(step, max_iterations, features=features)
             messages.append({"role": "user", "content": f"{execution_summary}\n\n{nudge}"})
 
         # Max iterations reached — force final answer

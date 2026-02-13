@@ -11,7 +11,7 @@ load_dotenv()
 # Ensure the package is importable when running from the examples/ directory
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from distill import OpenAIHandler, run
+from orchestrator import OpenAIHandler, run
 
 # --- Configuration ---
 SUPERVISOR_MODEL = os.environ.get("SUPERVISOR_MODEL", "meta-llama/Llama-3.3-70B-Instruct-Turbo")

@@ -1,4 +1,8 @@
 # Contributing
+## Agendat items:
+-[] bring peformance of Supervisor / Worker system to par with baseline (pull design decisions from MinionS)
+
+
 
 ## Extending the System
 
@@ -7,7 +11,7 @@
 Subclass `ModelHandler` and implement `chat` and `chat_batch`:
 
 ```python
-from distill.models import ModelHandler, LMResponse, Usage
+from orchestrator.models import ModelHandler, LMResponse, Usage
 
 class MyHandler(ModelHandler):
     def __init__(self, model: str, **kwargs):
@@ -22,15 +26,15 @@ class MyHandler(ModelHandler):
         ...
 ```
 
-A `VLLMHandler` for offline vLLM inference is already provided in `distill/models.py`. See that implementation for a complete example.
+A `VLLMHandler` for offline vLLM inference is already provided in `orchestrator/models.py`. See that implementation for a complete example.
 
 ### Customizing the Supervisor Prompt
 
-Edit `SYSTEM_PROMPT` in `distill/prompts.py`, or override the message construction:
+Edit `SYSTEM_PROMPT` in `orchestrator/prompts.py`, or override the message construction:
 
 ```python
-from distill.orchestrator import run
-from distill.prompts import build_system_prompt
+from orchestrator.orchestrator import run
+from orchestrator.prompts import build_system_prompt
 
 # Option 1: Modify the template in prompts.py directly
 
@@ -44,7 +48,7 @@ The supervisor prompt uses three format variables: `{worker_ctx}` (worker contex
 
 ### Adding REPL Primitives
 
-To give the supervisor access to new tools (e.g., web search, retrieval), add them to the REPL namespace in `distill/repl.py`:
+To give the supervisor access to new tools (e.g., web search, retrieval), add them to the REPL namespace in `orchestrator/repl.py`:
 
 ```python
 # In REPL.__init__, add to self._namespace:
@@ -56,7 +60,7 @@ self._namespace = {
 }
 ```
 
-Then update the system prompt in `distill/prompts.py` to document the new primitives so the supervisor knows how to use them.
+Then update the system prompt in `orchestrator/prompts.py` to document the new primitives so the supervisor knows how to use them.
 
 ### Using the Logs for Distillation
 

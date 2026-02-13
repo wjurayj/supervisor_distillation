@@ -7,10 +7,8 @@ SUPERVISORS=(
 )
 
 WORKERS=(
-  # "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo"
-  # "Qwen/Qwen2.5-7B-Instruct-Turbo"
-  "Qwen/Qwen3-235B-A22B-Instruct-2507-tput"
-  "meta-llama/Llama-3.3-70B-Instruct-Turbo"
+  "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo"
+  "Qwen/Qwen2.5-7B-Instruct-Turbo"
 )
 
 SEED=42
@@ -22,6 +20,7 @@ for sup in "${SUPERVISORS[@]}"; do
     python examples/run_experiment.py \
       --supervisor-model "$sup" \
       --worker-model "$wrk" \
+      --prompt minions \
       --seed "$SEED" \
       -n "$N"
     echo ""

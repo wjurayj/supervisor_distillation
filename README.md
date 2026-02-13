@@ -18,7 +18,7 @@ supervisor writes code → REPL executes it → worker processes chunks → supe
 ```
 supervisor_distillation/
 ├── pyproject.toml              # Project metadata and dependencies
-├── distill/
+├── orchestrator/
 │   ├── __init__.py             # Exports: run, ModelHandler, OpenAIHandler
 │   ├── models.py               # ModelHandler ABC + OpenAIHandler (any OpenAI-compatible API)
 │   ├── repl.py                 # Sandboxed REPL with worker primitives
@@ -40,15 +40,15 @@ supervisor_distillation/
 
 ### Module Overview
 
-**`distill/models.py`** — Model handler abstraction. `ModelHandler` is an ABC with two methods: `chat(messages)` and `chat_batch(message_batches)`. `OpenAIHandler` implements this using the `openai` SDK with a configurable `base_url`, so it works with Together AI, OpenAI, or any compatible endpoint. `VLLMHandler` provides offline inference via the vLLM engine.
+**`orchestrator/models.py`** — Model handler abstraction. `ModelHandler` is an ABC with two methods: `chat(messages)` and `chat_batch(message_batches)`. `OpenAIHandler` implements this using the `openai` SDK with a configurable `base_url`, so it works with Together AI, OpenAI, or any compatible endpoint. `VLLMHandler` provides offline inference via the vLLM engine.
 
-**`distill/repl.py`** — Sandboxed Python REPL that the supervisor's code runs in. The namespace exposes five primitives: `context` (the document), `query` (the question), `worker(prompt)` (call the worker model), `worker_batch(prompts)` (parallel worker calls), and `FINAL(answer)` (signal completion). Dangerous builtins (`eval`, `exec`, `compile`, `input`) are blocked. The namespace persists across code blocks within a run.
+**`orchestrator/repl.py`** — Sandboxed Python REPL that the supervisor's code runs in. The namespace exposes five primitives: `context` (the document), `query` (the question), `worker(prompt)` (call the worker model), `worker_batch(prompts)` (parallel worker calls), and `FINAL(answer)` (signal completion). Dangerous builtins (`eval`, `exec`, `compile`, `input`) are blocked. The namespace persists across code blocks within a run.
 
-**`distill/prompts.py`** — Builds the supervisor's system prompt, which teaches it the available primitives and a chunk-query-aggregate strategy. Also provides iteration-specific nudges that become more urgent as the step limit approaches.
+**`orchestrator/prompts.py`** — Builds the supervisor's system prompt, which teaches it the available primitives and a chunk-query-aggregate strategy. Also provides iteration-specific nudges that become more urgent as the step limit approaches.
 
-**`distill/log.py`** — `RunLogger` writes events to three JSONL files as they happen (append + flush). Every event has `step` and `timestamp`. Model events additionally include `model`, `usage`, and `elapsed`.
+**`orchestrator/log.py`** — `RunLogger` writes events to three JSONL files as they happen (append + flush). Every event has `step` and `timestamp`. Model events additionally include `model`, `usage`, and `elapsed`.
 
-**`distill/orchestrator.py`** — The `run()` function ties everything together. It creates the REPL and logger, then loops: call supervisor → extract ` ```repl``` ` blocks → execute in REPL → log everything → append truncated output to message history → repeat until `FINAL()` or max iterations.
+**`orchestrator/orchestrator.py`** — The `run()` function ties everything together. It creates the REPL and logger, then loops: call supervisor → extract ` ```repl``` ` blocks → execute in REPL → log everything → append truncated output to message history → repeat until `FINAL()` or max iterations.
 
 ## Setup
 
@@ -73,7 +73,7 @@ export OPENAI_API_KEY=your-key-here
 ### Quick Start
 
 ```python
-from distill import OpenAIHandler, run
+from orchestrator import OpenAIHandler, run
 
 supervisor = OpenAIHandler(
     model="meta-llama/Llama-3.3-70B-Instruct-Turbo",
